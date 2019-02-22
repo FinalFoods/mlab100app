@@ -56,11 +56,12 @@ export default class blueFiService {
         that.devices.set(id, device);
 
         handler.remove();   // remove the event handler
+        // the blueFi server is returning an array of 6 elements ex. [65, 4, 0, 2, 1, 2] 
         resolve(data.value[4].toString() + '.' + data.value[5].toString());
       });
     });
 
-    peripheralInfo = await BleManager.retrieveServices(id);
+    let peripheralInfo = await BleManager.retrieveServices(id);
     // console.log(peripheralInfo);
     await BleManager.startNotification(id, this.service, this.fromESP32Characteristic);
     await BleManager.write(id, this.service, this.toESP32Characteristic, cmd);
