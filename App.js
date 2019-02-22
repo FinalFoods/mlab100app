@@ -27,7 +27,8 @@ import {
 } from 'react-native';
 
 import BleManager from 'react-native-ble-manager';
-import { base64toHEX, toByteArray, pack } from './utils';
+import { base64toHEX, toByteArray, pack } from './utils/BufferHelpers';
+import blueFiService from './utils/blueFiService'
 
 import ScanButton from './components/ScanButton';
 
@@ -48,35 +49,34 @@ export default class App extends Component {
       appState: ''
     }
 
-    // shortcuts for binding the object to the callback context
-//    this.handleDiscoverPeripheral = this.handleDiscoverPeripheral.bind(this);
-//    this.handleStopScan = this.handleStopScan.bind(this);
-//    this.handleUpdateValueForCharacteristic = this.handleUpdateValueForCharacteristic.bind(this);
-//    this.handleDisconnectedPeripheral = this.handleDisconnectedPeripheral.bind(this);
-//    this.handleAppStateChange = this.handleAppStateChange.bind(this);
+    // BLE interface init
+    BleManager.start({showAlert: false});
+
+    this.blueFi = new blueFiService(bleManagerEmitter);
   }
 
   componentDidMount() {
     // catch 'change' events to the React.AppState object to detect an application switching to the foreground
     AppState.addEventListener('change', this.handleAppStateChange);
-    // BLE interface init
-    BleManager.start({showAlert: false});
+
     // register BLE events to be captured by the application
     this.handlerDiscover = bleManagerEmitter.addListener('BleManagerDiscoverPeripheral', this.handleDiscoverPeripheral );
     this.handlerStop = bleManagerEmitter.addListener('BleManagerStopScan', this.handleStopScan );
     this.handlerDisconnect = bleManagerEmitter.addListener('BleManagerDisconnectPeripheral', this.handleDisconnectedPeripheral );
-    this.handlerUpdate = bleManagerEmitter.addListener('BleManagerDidUpdateValueForCharacteristic', this.handleUpdateValueForCharacteristic );
+
+//    this.handlerUpdate = bleManagerEmitter.addListener('BleManagerDidUpdateValueForCharacteristic', this.handleUpdateValueForCharacteristic );
+
     // deal with Android permission
     if (Platform.OS === 'android' && Platform.Version >= 23) {
         PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.ACCESS_COARSE_LOCATION).then((result) => {
             if (result) {
-              console.log("Permission is OK");
+              console.log("Permissions OK.");
             } else {
               PermissionsAndroid.requestPermission(PermissionsAndroid.PERMISSIONS.ACCESS_COARSE_LOCATION).then((result) => {
                 if (result) {
-                  console.log("User accept");
+                  console.log("User accepted.");
                 } else {
-                  console.log("User refuse");
+                  console.log("User refused.");
                 }
               });
             }
@@ -85,9 +85,9 @@ export default class App extends Component {
   } // componentDidMount
 
   // Reac.AppState change event handler
-  handleAppStateChange = (nextAppState) => {
-    if (this.state.appState.match(/inactive|background/) && nextAppState === 'active') {
-      console.log('App has come to the foreground!')
+  handleAppStateChange = (newAppState) => {
+    if (this.state.appState.match(/inactive|background/) && newAppState === 'active') {
+      console.log('App has switched to foreground.')
       // fetch and display on the console connected devices
       BleManager.getConnectedPeripherals([]).then((peripheralsArray) => {
         console.log('Connected peripherals: ' + peripheralsArray.length);
@@ -95,7 +95,7 @@ export default class App extends Component {
       // TODO: any additional needed housekeeping
     }
     // set the new state (and render when appropriate)
-    this.setState({appState: nextAppState});
+    this.setState({appState: newAppState});
   }
 
   componentWillUnmount() {
@@ -104,7 +104,8 @@ export default class App extends Component {
     this.handlerStop.remove();
     this.handlerDisconnect.remove();
     this.handlerUpdate.remove();
-    this.handleAppStateChange.remove(); // MEG
+    // remove the change state listener to avoid multiple handlers when app switches to foreground
+    AppState.removeEventListener('change', this.handleAppStateChange);
   }
 
   // BleManagerDisconnectPeripheral event handler
@@ -116,20 +117,17 @@ export default class App extends Component {
       peripherals.set(peripheral.id, peripheral);
       this.setState({peripherals});
     }
-    console.log('Disconnected from ' + data.peripheral);
+
+    // only one callback may be registered in BLE native module
+    this.blueFi.handleDeviceDisconnect(data);  // propagate the event to the blueFi object
   }
 
+/*
   // BleManagerDidUpdateValueForCharacteristic event handler
   handleUpdateValueForCharacteristic = (data) => {
     console.log('Received data from ' + data.peripheral + ' characteristic ' + data.characteristic, data.value);
-
-/*    var service = 'ffff'; 
-    var fromESP32Characteristic = '0000ff02-0000-1000-8000-00805f9b34fb';
-    BleManager.read(this.peripheralPending, service, fromESP32Characteristic).then((data) => {
-        console.log('After read fromESP32Characteristic');
-        console.log(data);
-    }); */
   }
+*/
 
   // start scanning for BLE devices
   startScan() {
@@ -147,6 +145,7 @@ export default class App extends Component {
   // BleManagerDiscoverPeripheral event handler
   handleDiscoverPeripheral = (peripheral) => {
     var peripherals = this.state.peripherals;
+
     // a new device has been discovered
     if (!peripherals.has(peripheral.id)){
       console.log('Got ble peripheral', peripheral);
@@ -182,6 +181,7 @@ export default class App extends Component {
       console.log(results);
       // update connected state in the devices map 
       var peripherals = this.state.peripherals;
+
       for (var i = 0; i < results.length; i++) {
         var peripheral = results[i];
         peripheral.connected = true;
@@ -192,7 +192,7 @@ export default class App extends Component {
   }
 
   // send a blueFi service command to a device
-  blueFiService(peripheral) {
+  connectDevice(peripheral) {
     if (peripheral){
       if (peripheral.connected){
         BleManager.disconnect(peripheral.id);
@@ -205,43 +205,12 @@ export default class App extends Component {
             peripherals.set(peripheral.id, p);
             this.setState({peripherals});
           }
-          console.log('Connected to ' + peripheral.id);
 
-          setTimeout(() => {
-            // test: sending a command to the GATT bluFi server
-            BleManager.retrieveServices(peripheral.id).then((peripheralInfo) => {
-              console.log(peripheralInfo);
-              var service = 'ffff'; 
-              var toESP32Characteristic = '0000ff01-0000-1000-8000-00805f9b34fb';
-              var fromESP32Characteristic = '0000ff02-0000-1000-8000-00805f9b34fb';
-              var wifiStatusCmd = [0x14,0x00,0x01,0x00]; 
-              var getVersionCmd = [0x1C,0x00,0x10,0x00];//[0x14,0x00,0x10,0x00]; 
+          // get the blueFi server version number
+          this.blueFi.getVersion(peripheral.id).then((res) => {
+            console.log("getVersion:", res);
+          });
 
-              this.peripheralPending = peripheral.id;
-              setTimeout(() => { 
-                BleManager.startNotification(peripheral.id, service, fromESP32Characteristic).then(() => {
-                  console.log('Started notification on ' + peripheral.id);
-                                
-                  setTimeout(() => {
-                    BleManager.write(peripheral.id, service, toESP32Characteristic, getVersionCmd).then(() => {
-                      console.log('After write toESP32Characteristic');
-                      /*
-                      BleManager.read(peripheral.id, service, fromESP32Characteristic).then(() => {
-                      console.log('After read fromESP32Characteristic');
-                      //console.log(data);
-                      });
-                      */
-                    });
-
-                  }, 1500);
-                }).catch((error) => {
-                  console.log('Notification error', error);
-                });
-                
-              }, 600);
-            });
-              
-          }, 1900);
         }).catch((error) => {
           console.log('Connection error', error);
         });
@@ -276,7 +245,7 @@ export default class App extends Component {
             renderRow={(item) => {
               const color = item.connected ? 'green' : '#fff';
               return (
-                <TouchableHighlight onPress={() => this.blueFiService(item) }>
+                <TouchableHighlight onPress={() => this.connectDevice(item) }>
                   <View style={[styles.row, {backgroundColor: color}]}>
                     <Text style={{fontSize: 12, textAlign: 'center', color: '#333333', padding: 10}}>{item.name}</Text>
                     <Text style={{fontSize: 8, textAlign: 'center', color: '#333333', padding: 10}}>{item.id}</Text>
